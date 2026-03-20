@@ -1,0 +1,5 @@
+{
+  "name": "MNW - Mis Notas Web",
+  "description": "Aplicación de gestión de notas locales y en la nube sincronizada con Supabase.",
+  "requestFramePermissions": []
+}
