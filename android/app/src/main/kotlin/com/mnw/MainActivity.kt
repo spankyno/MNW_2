@@ -29,7 +29,10 @@ class MainActivity : AppCompatActivity() {
         private const val PERMISSION_REQUEST_CODE = 123
         private const val DIR_PICKER_REQUEST_CODE = 456
         private const val FILE_PICKER_REQUEST_CODE = 789
+        private const val SAVE_BACKUP_REQUEST_CODE = 101
     }
+
+    private var pendingBackupBytes: ByteArray? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -199,6 +202,22 @@ class MainActivity : AppCompatActivity() {
             }
             return false
         }
+
+        @JavascriptInterface
+        fun saveBackup(fileName: String, base64Data: String) {
+            try {
+                val bytes = android.util.Base64.decode(base64Data, android.util.Base64.DEFAULT)
+                val intent = Intent(Intent.ACTION_CREATE_DOCUMENT)
+                intent.addCategory(Intent.CATEGORY_OPENABLE)
+                intent.type = "application/zip"
+                intent.putExtra(Intent.EXTRA_TITLE, fileName)
+                
+                pendingBackupBytes = bytes
+                startActivityForResult(intent, SAVE_BACKUP_REQUEST_CODE)
+            } catch (e: Exception) {
+                android.util.Log.e("MNW", "Error saving backup", e)
+            }
+        }
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
@@ -228,6 +247,22 @@ class MainActivity : AppCompatActivity() {
                         val fileName = DocumentFile.fromSingleUri(this, fileUri)?.name ?: "unnamed.txt"
                         webView.post {
                             webView.evaluateJavascript("window.onFileSelected('${fileUri.toString()}', '${fileName}')", null)
+                        }
+                    }
+                }
+                SAVE_BACKUP_REQUEST_CODE -> {
+                    val uri = data?.data
+                    if (uri != null && pendingBackupBytes != null) {
+                        try {
+                            contentResolver.openOutputStream(uri)?.use { outputStream ->
+                                outputStream.write(pendingBackupBytes)
+                            }
+                            pendingBackupBytes = null
+                            webView.post {
+                                webView.evaluateJavascript("window.showToast?.('Backup guardado correctamente')", null)
+                            }
+                        } catch (e: Exception) {
+                            android.util.Log.e("MNW", "Error writing backup to URI", e)
                         }
                     }
                 }
