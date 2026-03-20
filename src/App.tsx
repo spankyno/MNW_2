@@ -144,6 +144,10 @@ export default function App() {
     setTimeout(() => setToast({ message: '', type: null }), 3000);
   };
 
+  useEffect(() => {
+    (window as any).showToast = showToast;
+  }, []);
+
   // Initialize data
   const fetchLocalNotes = useCallback((uri: string, existingNotes?: Note[]) => {
     console.log('Fetching local notes from URI:', uri);
@@ -656,16 +660,54 @@ export default function App() {
   };
 
   const handleBackup = async () => {
-    const zip = new JSZip();
-    notes.forEach(note => {
-      zip.file(`${note.title}.txt`, note.content);
-    });
-    const content = await zip.generateAsync({ type: 'blob' });
-    const url = URL.createObjectURL(content);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `MNW_Backup_${format(new Date(), 'yyyyMMdd')}.zip`;
-    link.click();
+    try {
+      showToast('Generando backup...');
+      const zip = new JSZip();
+      
+      // Filter out empty notes or ensure we have content
+      const notesToBackup = notes.filter(n => n.title && (n.content || n.is_local));
+      
+      if (notesToBackup.length === 0) {
+        showToast('No hay notas para exportar', 'error');
+        return;
+      }
+
+      for (const note of notesToBackup) {
+        let content = note.content;
+        
+        // If content is empty and it's local, try to read it one last time
+        if (!content && note.is_local && window.AndroidBridge && settings.localDirectoryUri) {
+          try {
+            content = window.AndroidBridge.readFile(settings.localDirectoryUri, note.id);
+          } catch (e) {
+            console.error('Error reading note for backup:', note.id, e);
+          }
+        }
+        
+        zip.file(`${note.title}.txt`, content || '');
+      }
+
+      const fileName = `MNW_Backup_${format(new Date(), 'yyyyMMdd_HHmm')}.zip`;
+
+      if (window.AndroidBridge && (window.AndroidBridge as any).saveBackup) {
+        const base64 = await zip.generateAsync({ type: 'base64' });
+        (window.AndroidBridge as any).saveBackup(fileName, base64);
+      } else {
+        const blob = await zip.generateAsync({ type: 'blob' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = fileName;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+        showToast('Backup generado');
+      }
+    } catch (e) {
+      console.error('Error generating backup:', e);
+      showToast('Error al generar backup', 'error');
+    }
   };
 
   // --- Filtering ---
