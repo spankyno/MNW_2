@@ -2,6 +2,7 @@ package com.mnw
 
 import android.Manifest
 import android.app.Activity
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -63,6 +64,24 @@ class MainActivity : AppCompatActivity() {
                 Intent.FLAG_GRANT_PREFIX_URI_PERMISSION
             )
             startActivityForResult(intent, DIR_PICKER_REQUEST_CODE)
+        }
+
+        @JavascriptInterface
+        fun saveSetting(key: String, value: String) {
+            android.util.Log.d("MNW", "Saving setting: $key = $value")
+            val sharedPref = getSharedPreferences("MNW_Settings", Context.MODE_PRIVATE)
+            with(sharedPref.edit()) {
+                putString(key, value)
+                apply()
+            }
+        }
+
+        @JavascriptInterface
+        fun getSetting(key: String, defaultValue: String): String {
+            val sharedPref = getSharedPreferences("MNW_Settings", Context.MODE_PRIVATE)
+            val value = sharedPref.getString(key, defaultValue) ?: defaultValue
+            android.util.Log.d("MNW", "Getting setting: $key = $value")
+            return value
         }
 
         @JavascriptInterface
