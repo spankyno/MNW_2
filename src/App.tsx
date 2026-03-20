@@ -28,6 +28,19 @@ import { Note, AppSettings } from './types';
 import { cn, formatDate } from './lib/utils';
 
 // --- Mock Data for Preview ---
+declare global {
+  interface Window {
+    AndroidBridge?: {
+      selectDirectory: () => void;
+      listFiles: (uri: string) => string;
+      readFile: (uri: string, fileName: string) => string;
+      writeFile: (uri: string, fileName: string, content: string) => boolean;
+      deleteFile: (uri: string, fileName: string) => boolean;
+    };
+    onDirectorySelected?: (uri: string) => void;
+  }
+}
+
 const MOCK_NOTES: Note[] = [
   {
     id: '1',
@@ -128,6 +141,37 @@ export default function App() {
   }>({ type: null });
 
   // Initialize data
+  const fetchLocalNotes = useCallback((uri: string) => {
+    console.log('Fetching local notes from URI:', uri);
+    if (!window.AndroidBridge) {
+      console.warn('AndroidBridge not available');
+      return;
+    }
+    try {
+      const filesJson = window.AndroidBridge.listFiles(uri);
+      console.log('Files JSON from bridge:', filesJson);
+      const files = JSON.parse(filesJson);
+      const localNotes: Note[] = files.map((f: any) => ({
+        id: f.name, // Use filename as ID for local files
+        title: f.name.replace('.txt', ''),
+        content: '', // Content will be loaded when opened
+        created_at: new Date(f.lastModified).toISOString(),
+        updated_at: new Date(f.lastModified).toISOString(),
+        is_local: true,
+        is_favorite: false,
+        local_path: f.name
+      }));
+      
+      console.log('Parsed local notes:', localNotes.length);
+      setNotes(currentNotes => {
+        const webNotes = currentNotes.filter(n => !n.is_local);
+        return [...webNotes, ...localNotes];
+      });
+    } catch (e) {
+      console.error('Error listing local files:', e);
+    }
+  }, []);
+
   const fetchNotes = useCallback(async (userId: string) => {
     if (!isSupabaseConfigured) return;
     
@@ -165,14 +209,28 @@ export default function App() {
     const savedNotes = localStorage.getItem('mnw_local_notes');
     if (savedNotes) {
       setNotes(JSON.parse(savedNotes));
-    } else {
+    } else if (!window.AndroidBridge) {
       setNotes(MOCK_NOTES);
     }
 
     const savedSettings = localStorage.getItem('mnw_settings');
     if (savedSettings) {
-      setSettings(JSON.parse(savedSettings));
+      const parsedSettings = JSON.parse(savedSettings);
+      setSettings(parsedSettings);
+      if (parsedSettings.localDirectoryUri) {
+        // Small delay to ensure bridge is fully ready
+        setTimeout(() => fetchLocalNotes(parsedSettings.localDirectoryUri), 500);
+      }
     }
+
+    window.onDirectorySelected = (uri: string) => {
+      setSettings(prev => {
+        const newSettings = { ...prev, localDirectoryUri: uri };
+        localStorage.setItem('mnw_settings', JSON.stringify(newSettings));
+        fetchLocalNotes(uri);
+        return newSettings;
+      });
+    };
 
     if (isSupabaseConfigured) {
       supabase.auth.getSession().then(({ data: { session } }) => {
@@ -216,6 +274,19 @@ export default function App() {
   // --- Actions ---
   const handleCreateLocalNote = () => {
     console.log('Creating local note...');
+    if (window.AndroidBridge && !settings.localDirectoryUri) {
+      setModal({
+        type: 'confirm',
+        title: 'Carpeta no seleccionada',
+        message: 'Por favor, selecciona una carpeta de trabajo en los ajustes para guardar notas locales.',
+        onConfirm: () => {
+          setView('settings');
+          setModal({ type: null });
+        }
+      });
+      return;
+    }
+
     setModal({
       type: 'create',
       title: 'Nueva Nota Local',
@@ -223,16 +294,33 @@ export default function App() {
       inputValue: '',
       onConfirm: (name) => {
         console.log('Confirming local note creation:', name);
-        const finalName = name?.trim() || `Nota ${new Date().toLocaleDateString()}`;
+        const baseName = name?.trim() || `Nota ${new Date().toLocaleDateString().replace(/\//g, '-')}`;
+        const fileName = baseName.endsWith('.txt') ? baseName : `${baseName}.txt`;
+        
         const newNote: Note = {
-          id: Math.random().toString(36).substr(2, 9),
-          title: finalName,
+          id: fileName,
+          title: baseName.replace('.txt', ''),
           content: '',
           created_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
           is_local: true,
           is_favorite: false,
+          local_path: fileName
         };
+
+        if (window.AndroidBridge && settings.localDirectoryUri) {
+          const success = window.AndroidBridge.writeFile(settings.localDirectoryUri, fileName, '');
+          if (!success) {
+            setModal({
+              type: 'confirm',
+              title: 'Error',
+              message: 'No se pudo crear el archivo en el dispositivo.',
+              onConfirm: () => setModal({ type: null })
+            });
+            return;
+          }
+        }
+
         setNotes(currentNotes => [newNote, ...currentNotes]);
         handleOpenEditor(newNote);
         setModal({ type: null });
@@ -241,6 +329,11 @@ export default function App() {
   };
 
   const handleLoadLocalFile = (event: React.ChangeEvent<HTMLInputElement>) => {
+    if (window.AndroidBridge && settings.localDirectoryUri) {
+      fetchLocalNotes(settings.localDirectoryUri);
+      return;
+    }
+    
     const file = event.target.files?.[0];
     if (!file) return;
 
@@ -331,10 +424,18 @@ export default function App() {
   };
 
   const handleOpenEditor = useCallback((note: Note) => {
-    setSelectedNote(note);
-    setHistory([note.content]);
+    let noteToOpen = { ...note };
+    
+    // Load content from Android if it's a local note and content is empty
+    if (note.is_local && window.AndroidBridge && settings.localDirectoryUri && note.local_path) {
+      const content = window.AndroidBridge.readFile(settings.localDirectoryUri, note.local_path);
+      noteToOpen.content = content;
+    }
+    
+    setSelectedNote(noteToOpen);
+    setHistory([noteToOpen.content]);
     setView('editor');
-  }, []);
+  }, [settings.localDirectoryUri]);
 
   const handleSaveNote = useCallback((content: string) => {
     setSelectedNote(prev => {
@@ -347,7 +448,11 @@ export default function App() {
       
       setNotes(currentNotes => currentNotes.map(n => n.id === updatedNote.id ? updatedNote : n));
       
-      if (!updatedNote.is_local && user && isSupabaseConfigured) {
+      if (updatedNote.is_local) {
+        if (window.AndroidBridge && settings.localDirectoryUri && updatedNote.local_path) {
+          window.AndroidBridge.writeFile(settings.localDirectoryUri, updatedNote.local_path, content);
+        }
+      } else if (user && isSupabaseConfigured) {
         supabase.from('notes').update({ 
           content: updatedNote.content, 
           updated_at: updatedNote.updated_at 
@@ -356,7 +461,7 @@ export default function App() {
       
       return updatedNote;
     });
-  }, [user]);
+  }, [user, settings.localDirectoryUri]);
 
   const handleDeleteNote = useCallback((id: string, isLocal: boolean) => {
     console.log('Deleting note:', id, 'isLocal:', isLocal);
@@ -367,6 +472,9 @@ export default function App() {
       onConfirm: () => {
         console.log('Confirming deletion for:', id);
         if (isLocal) {
+          if (window.AndroidBridge && settings.localDirectoryUri) {
+            window.AndroidBridge.deleteFile(settings.localDirectoryUri, id);
+          }
           setNotes(currentNotes => currentNotes.filter(n => n.id !== id));
         } else {
           if (isSupabaseConfigured) {
@@ -382,7 +490,7 @@ export default function App() {
         setModal({ type: null });
       }
     });
-  }, [isSupabaseConfigured]);
+  }, [isSupabaseConfigured, settings.localDirectoryUri]);
 
   const toggleFavorite = useCallback((id: string) => {
     setNotes(currentNotes => currentNotes.map(n => n.id === id ? { ...n, is_favorite: !n.is_favorite } : n));
@@ -478,18 +586,46 @@ export default function App() {
               </div>
               <span className="text-[10px] font-bold uppercase tracking-tight">Nueva Local</span>
             </button>
-            <label className="flex flex-col items-center justify-center p-4 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-3xl hover:border-amber-500 transition-all group cursor-pointer">
-              <input 
-                type="file" 
-                accept=".txt" 
-                className="hidden" 
-                onChange={handleLoadLocalFile}
-              />
-              <div className="w-10 h-10 rounded-full bg-amber-50 dark:bg-amber-500/10 flex items-center justify-center mb-3 group-hover:scale-110 transition-transform">
-                <Download className="w-6 h-6 text-amber-500" />
-              </div>
-              <span className="text-[10px] font-bold uppercase tracking-tight">Cargar Local</span>
-            </label>
+            
+            {window.AndroidBridge ? (
+              <button 
+                onClick={() => {
+                  if (settings.localDirectoryUri) {
+                    fetchLocalNotes(settings.localDirectoryUri);
+                  } else {
+                    setModal({
+                      type: 'confirm',
+                      title: 'Carpeta no seleccionada',
+                      message: 'Por favor, selecciona una carpeta de trabajo en los ajustes para cargar notas locales.',
+                      onConfirm: () => {
+                        setView('settings');
+                        setModal({ type: null });
+                      }
+                    });
+                  }
+                }}
+                className="flex flex-col items-center justify-center p-4 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-3xl hover:border-amber-500 transition-all group"
+              >
+                <div className="w-10 h-10 rounded-full bg-amber-50 dark:bg-amber-500/10 flex items-center justify-center mb-3 group-hover:scale-110 transition-transform">
+                  <Download className="w-6 h-6 text-amber-500" />
+                </div>
+                <span className="text-[10px] font-bold uppercase tracking-tight">Cargar Local</span>
+              </button>
+            ) : (
+              <label className="flex flex-col items-center justify-center p-4 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-3xl hover:border-amber-500 transition-all group cursor-pointer">
+                <input 
+                  type="file" 
+                  accept=".txt" 
+                  className="hidden" 
+                  onChange={handleLoadLocalFile}
+                />
+                <div className="w-10 h-10 rounded-full bg-amber-50 dark:bg-amber-500/10 flex items-center justify-center mb-3 group-hover:scale-110 transition-transform">
+                  <Download className="w-6 h-6 text-amber-500" />
+                </div>
+                <span className="text-[10px] font-bold uppercase tracking-tight">Cargar Local</span>
+              </label>
+            )}
+
             <button 
               onClick={handleCreateWebNote}
               className="flex flex-col items-center justify-center p-4 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-3xl hover:border-blue-500 transition-all group"
@@ -649,6 +785,47 @@ export default function App() {
                 >
                   <div className={cn("absolute top-1 w-4 h-4 bg-white rounded-full transition-all", settings.lineNumbers ? "left-7" : "left-1")} />
                 </button>
+              </div>
+              
+              <div className="p-4">
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-3">
+                    <div className="p-2 bg-zinc-100 dark:bg-zinc-800 rounded-xl">
+                      <Save className="w-5 h-5" />
+                    </div>
+                    <span className="font-medium">Carpeta de Notas Locales</span>
+                  </div>
+                  <div className="flex gap-2">
+                    <button 
+                      onClick={() => window.AndroidBridge?.selectDirectory()}
+                      className="px-3 py-1 bg-emerald-500 text-white text-xs font-bold rounded-lg"
+                    >
+                      Seleccionar
+                    </button>
+                    {settings.localDirectoryUri && (
+                      <button 
+                        onClick={() => {
+                          setSettings(prev => {
+                            const newSettings = { ...prev, localDirectoryUri: undefined };
+                            localStorage.setItem('mnw_settings', JSON.stringify(newSettings));
+                            return newSettings;
+                          });
+                          setNotes(currentNotes => currentNotes.filter(n => !n.is_local));
+                        }}
+                        className="px-3 py-1 bg-red-500 text-white text-xs font-bold rounded-lg"
+                      >
+                        Limpiar
+                      </button>
+                    )}
+                  </div>
+                </div>
+                {settings.localDirectoryUri ? (
+                  <p className="text-[10px] text-zinc-400 break-all font-mono bg-zinc-50 dark:bg-zinc-950 p-2 rounded-lg">
+                    {settings.localDirectoryUri}
+                  </p>
+                ) : (
+                  <p className="text-[10px] text-red-400 italic">Ninguna carpeta seleccionada</p>
+                )}
               </div>
             </div>
           </section>

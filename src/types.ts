@@ -13,4 +13,5 @@ export interface Note {
 export interface AppSettings {
   darkMode: boolean;
   lineNumbers: boolean;
+  localDirectoryUri?: string;
 }
