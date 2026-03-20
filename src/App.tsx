@@ -36,6 +36,8 @@ declare global {
       readFile: (uri: string, fileName: string) => string;
       writeFile: (uri: string, fileName: string, content: string) => boolean;
       deleteFile: (uri: string, fileName: string) => boolean;
+      saveSetting: (key: string, value: string) => void;
+      getSetting: (key: string, defaultValue: string) => string;
     };
     onDirectorySelected?: (uri: string) => void;
   }
@@ -151,21 +153,27 @@ export default function App() {
       const filesJson = window.AndroidBridge.listFiles(uri);
       console.log('Files JSON from bridge:', filesJson);
       const files = JSON.parse(filesJson);
-      const localNotes: Note[] = files.map((f: any) => ({
-        id: f.name, // Use filename as ID for local files
-        title: f.name.replace('.txt', ''),
-        content: '', // Content will be loaded when opened
-        created_at: new Date(f.lastModified).toISOString(),
-        updated_at: new Date(f.lastModified).toISOString(),
-        is_local: true,
-        is_favorite: false,
-        local_path: f.name
-      }));
       
-      console.log('Parsed local notes:', localNotes.length);
       setNotes(currentNotes => {
         const webNotes = currentNotes.filter(n => !n.is_local);
-        return [...webNotes, ...localNotes];
+        const existingLocalNotes = currentNotes.filter(n => n.is_local);
+        
+        const newLocalNotes: Note[] = files.map((f: any) => {
+          const existing = existingLocalNotes.find(n => n.id === f.name);
+          return {
+            id: f.name,
+            title: f.name.replace('.txt', ''),
+            content: existing?.content || '',
+            created_at: new Date(f.lastModified).toISOString(),
+            updated_at: new Date(f.lastModified).toISOString(),
+            is_local: true,
+            is_favorite: existing?.is_favorite || false,
+            local_path: f.name
+          };
+        });
+        
+        console.log('Parsed local notes:', newLocalNotes.length);
+        return [...webNotes, ...newLocalNotes];
       });
     } catch (e) {
       console.error('Error listing local files:', e);
@@ -206,27 +214,50 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    const savedNotes = localStorage.getItem('mnw_local_notes');
-    if (savedNotes) {
-      setNotes(JSON.parse(savedNotes));
-    } else if (!window.AndroidBridge) {
-      setNotes(MOCK_NOTES);
-    }
+    // Load settings and notes from AndroidBridge if available, otherwise localStorage
+    const loadData = async () => {
+      let savedSettings: any = null;
+      let savedNotes: any = null;
 
-    const savedSettings = localStorage.getItem('mnw_settings');
-    if (savedSettings) {
-      const parsedSettings = JSON.parse(savedSettings);
-      setSettings(parsedSettings);
-      if (parsedSettings.localDirectoryUri) {
-        // Small delay to ensure bridge is fully ready
-        setTimeout(() => fetchLocalNotes(parsedSettings.localDirectoryUri), 500);
+      if (window.AndroidBridge) {
+        const settingsStr = window.AndroidBridge.getSetting('mnw_settings', '');
+        if (settingsStr) savedSettings = JSON.parse(settingsStr);
+        
+        const notesStr = window.AndroidBridge.getSetting('mnw_local_notes', '');
+        if (notesStr) savedNotes = JSON.parse(notesStr);
+      } else {
+        const localSettingsStr = localStorage.getItem('mnw_settings');
+        if (localSettingsStr) savedSettings = JSON.parse(localSettingsStr);
+        
+        const localNotesStr = localStorage.getItem('mnw_local_notes');
+        if (localNotesStr) savedNotes = JSON.parse(localNotesStr);
       }
-    }
+
+      if (savedSettings) {
+        setSettings(savedSettings);
+        if (savedSettings.localDirectoryUri && window.AndroidBridge) {
+          // Small delay to ensure bridge is fully ready
+          setTimeout(() => fetchLocalNotes(savedSettings.localDirectoryUri), 500);
+        }
+      }
+
+      if (savedNotes) {
+        setNotes(savedNotes);
+      } else if (!window.AndroidBridge) {
+        setNotes(MOCK_NOTES);
+      }
+    };
+
+    loadData();
 
     window.onDirectorySelected = (uri: string) => {
       setSettings(prev => {
         const newSettings = { ...prev, localDirectoryUri: uri };
-        localStorage.setItem('mnw_settings', JSON.stringify(newSettings));
+        if (window.AndroidBridge) {
+          window.AndroidBridge.saveSetting('mnw_settings', JSON.stringify(newSettings));
+        } else {
+          localStorage.setItem('mnw_settings', JSON.stringify(newSettings));
+        }
         fetchLocalNotes(uri);
         return newSettings;
       });
@@ -258,12 +289,21 @@ export default function App() {
 
   // Persist local notes
   useEffect(() => {
-    localStorage.setItem('mnw_local_notes', JSON.stringify(notes));
+    if (window.AndroidBridge) {
+      window.AndroidBridge.saveSetting('mnw_local_notes', JSON.stringify(notes.filter(n => n.is_local)));
+    } else {
+      localStorage.setItem('mnw_local_notes', JSON.stringify(notes));
+    }
   }, [notes]);
 
   // Persist settings
   useEffect(() => {
-    localStorage.setItem('mnw_settings', JSON.stringify(settings));
+    if (window.AndroidBridge) {
+      window.AndroidBridge.saveSetting('mnw_settings', JSON.stringify(settings));
+    } else {
+      localStorage.setItem('mnw_settings', JSON.stringify(settings));
+    }
+    
     if (settings.darkMode) {
       document.documentElement.classList.add('dark');
     } else {
@@ -492,15 +532,32 @@ export default function App() {
     });
   }, [isSupabaseConfigured, settings.localDirectoryUri]);
 
-  const toggleFavorite = useCallback((id: string) => {
-    setNotes(currentNotes => currentNotes.map(n => n.id === id ? { ...n, is_favorite: !n.is_favorite } : n));
+  const toggleFavorite = useCallback(async (id: string) => {
+    const note = notes.find(n => n.id === id);
+    if (!note) return;
+
+    const newFavoriteStatus = !note.is_favorite;
+    
+    setNotes(currentNotes => currentNotes.map(n => n.id === id ? { ...n, is_favorite: newFavoriteStatus } : n));
     setSelectedNote(prev => {
       if (prev?.id === id) {
-        return { ...prev, is_favorite: !prev.is_favorite };
+        return { ...prev, is_favorite: newFavoriteStatus };
       }
       return prev;
     });
-  }, []);
+
+    if (!note.is_local && user && isSupabaseConfigured) {
+      try {
+        const { error } = await supabase
+          .from('notes')
+          .update({ is_favorite: newFavoriteStatus })
+          .eq('id', id);
+        if (error) console.error('Error updating favorite status in Supabase:', error);
+      } catch (e) {
+        console.error('Error updating favorite status:', e);
+      }
+    }
+  }, [notes, user]);
 
   const handleUndo = () => {
     if (history.length > 1) {
@@ -592,6 +649,7 @@ export default function App() {
                 onClick={() => {
                   if (settings.localDirectoryUri) {
                     fetchLocalNotes(settings.localDirectoryUri);
+                    // Show a temporary "Cargado" state or just rely on the list updating
                   } else {
                     setModal({
                       type: 'confirm',
