@@ -28,6 +28,7 @@ class MainActivity : AppCompatActivity() {
     companion object {
         private const val PERMISSION_REQUEST_CODE = 123
         private const val DIR_PICKER_REQUEST_CODE = 456
+        private const val FILE_PICKER_REQUEST_CODE = 789
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -64,6 +65,19 @@ class MainActivity : AppCompatActivity() {
                 Intent.FLAG_GRANT_PREFIX_URI_PERMISSION
             )
             startActivityForResult(intent, DIR_PICKER_REQUEST_CODE)
+        }
+
+        @JavascriptInterface
+        fun selectFile() {
+            val intent = Intent(Intent.ACTION_OPEN_DOCUMENT)
+            intent.addCategory(Intent.CATEGORY_OPENABLE)
+            intent.type = "text/plain"
+            intent.addFlags(
+                Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                Intent.FLAG_GRANT_WRITE_URI_PERMISSION or
+                Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION
+            )
+            startActivityForResult(intent, FILE_PICKER_REQUEST_CODE)
         }
 
         @JavascriptInterface
@@ -159,21 +173,63 @@ class MainActivity : AppCompatActivity() {
             }
             return false
         }
+        @JavascriptInterface
+        fun readFileByUri(uriString: String): String {
+            try {
+                val uri = Uri.parse(uriString)
+                val inputStream = contentResolver.openInputStream(uri)
+                val reader = BufferedReader(InputStreamReader(inputStream, "UTF-8"))
+                return reader.use { it.readText() }
+            } catch (e: Exception) {
+                android.util.Log.e("MNW", "Error reading file by URI", e)
+            }
+            return ""
+        }
+
+        @JavascriptInterface
+        fun writeFileByUri(uriString: String, content: String): Boolean {
+            try {
+                val uri = Uri.parse(uriString)
+                val outputStream = contentResolver.openOutputStream(uri, "wt")
+                val writer = OutputStreamWriter(outputStream, "UTF-8")
+                writer.use { it.write(content) }
+                return true
+            } catch (e: Exception) {
+                android.util.Log.e("MNW", "Error writing file by URI", e)
+            }
+            return false
+        }
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == DIR_PICKER_REQUEST_CODE && resultCode == Activity.RESULT_OK) {
-            val treeUri = data?.data
-            if (treeUri != null) {
-                contentResolver.takePersistableUriPermission(
-                    treeUri,
-                    Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-                )
-                selectedDirUri = treeUri
-                // Notify JS about the new URI
-                webView.post {
-                    webView.evaluateJavascript("window.onDirectorySelected('${treeUri.toString()}')", null)
+        if (resultCode == Activity.RESULT_OK) {
+            when (requestCode) {
+                DIR_PICKER_REQUEST_CODE -> {
+                    val treeUri = data?.data
+                    if (treeUri != null) {
+                        contentResolver.takePersistableUriPermission(
+                            treeUri,
+                            Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                        )
+                        selectedDirUri = treeUri
+                        webView.post {
+                            webView.evaluateJavascript("window.onDirectorySelected('${treeUri.toString()}')", null)
+                        }
+                    }
+                }
+                FILE_PICKER_REQUEST_CODE -> {
+                    val fileUri = data?.data
+                    if (fileUri != null) {
+                        contentResolver.takePersistableUriPermission(
+                            fileUri,
+                            Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                        )
+                        val fileName = DocumentFile.fromSingleUri(this, fileUri)?.name ?: "unnamed.txt"
+                        webView.post {
+                            webView.evaluateJavascript("window.onFileSelected('${fileUri.toString()}', '${fileName}')", null)
+                        }
+                    }
                 }
             }
         }
