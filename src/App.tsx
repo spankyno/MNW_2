@@ -32,14 +32,18 @@ declare global {
   interface Window {
     AndroidBridge?: {
       selectDirectory: () => void;
+      selectFile: () => void;
       listFiles: (uri: string) => string;
       readFile: (uri: string, fileName: string) => string;
       writeFile: (uri: string, fileName: string, content: string) => boolean;
+      readFileByUri: (uriString: string) => string;
+      writeFileByUri: (uriString: string, content: string) => boolean;
       deleteFile: (uri: string, fileName: string) => boolean;
       saveSetting: (key: string, value: string) => void;
       getSetting: (key: string, defaultValue: string) => string;
     };
     onDirectorySelected?: (uri: string) => void;
+    onFileSelected?: (uri: string, fileName: string) => void;
   }
 }
 
@@ -52,15 +56,6 @@ const MOCK_NOTES: Note[] = [
     updated_at: new Date().toISOString(),
     is_local: true,
     is_favorite: true,
-  },
-  {
-    id: '2',
-    title: 'Lista de la compra',
-    content: 'Leche, huevos, pan, fruta, verduras.',
-    created_at: new Date(Date.now() - 86400000).toISOString(),
-    updated_at: new Date(Date.now() - 86400000).toISOString(),
-    is_local: false,
-    is_favorite: false,
   }
 ];
 
@@ -142,8 +137,15 @@ export default function App() {
     passwordValue?: string;
   }>({ type: null });
 
+  const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | null }>({ message: '', type: null });
+
+  const showToast = (message: string, type: 'success' | 'error' = 'success') => {
+    setToast({ message, type });
+    setTimeout(() => setToast({ message: '', type: null }), 3000);
+  };
+
   // Initialize data
-  const fetchLocalNotes = useCallback((uri: string) => {
+  const fetchLocalNotes = useCallback((uri: string, existingNotes?: Note[]) => {
     console.log('Fetching local notes from URI:', uri);
     if (!window.AndroidBridge) {
       console.warn('AndroidBridge not available');
@@ -155,8 +157,9 @@ export default function App() {
       const files = JSON.parse(filesJson);
       
       setNotes(currentNotes => {
-        const webNotes = currentNotes.filter(n => !n.is_local);
-        const existingLocalNotes = currentNotes.filter(n => n.is_local);
+        const notesToUse = existingNotes || currentNotes;
+        const webNotes = notesToUse.filter(n => !n.is_local);
+        const existingLocalNotes = notesToUse.filter(n => n.is_local);
         
         const newLocalNotes: Note[] = files.map((f: any) => {
           const existing = existingLocalNotes.find(n => n.id === f.name);
@@ -177,6 +180,7 @@ export default function App() {
       });
     } catch (e) {
       console.error('Error listing local files:', e);
+      showToast('Error al leer archivos locales', 'error');
     }
   }, []);
 
@@ -214,6 +218,38 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    window.onFileSelected = (uri: string, fileName: string) => {
+      console.log('File selected via bridge:', uri, fileName);
+      if (!window.AndroidBridge) return;
+      
+      try {
+        const content = window.AndroidBridge.readFileByUri(uri);
+        const newNote: Note = {
+          id: uri, // Use URI as ID for files picked this way
+          title: fileName.replace('.txt', ''),
+          content: content,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+          is_local: true,
+          is_favorite: false,
+          uri_path: uri
+        };
+        
+        setNotes(prev => {
+          const filtered = prev.filter(n => n.id !== uri);
+          return [newNote, ...filtered];
+        });
+        
+        setSelectedNote(newNote);
+        setHistory([newNote.content]);
+        setView('editor');
+        showToast('Archivo cargado');
+      } catch (e) {
+        console.error('Error reading selected file:', e);
+        showToast('Error al leer el archivo', 'error');
+      }
+    };
+
     // Load settings and notes from AndroidBridge if available, otherwise localStorage
     const loadData = async () => {
       let savedSettings: any = null;
@@ -236,8 +272,8 @@ export default function App() {
       if (savedSettings) {
         setSettings(savedSettings);
         if (savedSettings.localDirectoryUri && window.AndroidBridge) {
-          // Small delay to ensure bridge is fully ready
-          setTimeout(() => fetchLocalNotes(savedSettings.localDirectoryUri), 500);
+          // Pass loaded notes to fetchLocalNotes to preserve favorites
+          fetchLocalNotes(savedSettings.localDirectoryUri, savedNotes || []);
         }
       }
 
@@ -467,9 +503,19 @@ export default function App() {
     let noteToOpen = { ...note };
     
     // Load content from Android if it's a local note and content is empty
-    if (note.is_local && window.AndroidBridge && settings.localDirectoryUri && note.local_path) {
-      const content = window.AndroidBridge.readFile(settings.localDirectoryUri, note.local_path);
-      noteToOpen.content = content;
+    if (note.is_local && window.AndroidBridge) {
+      try {
+        let content = '';
+        if (note.uri_path) {
+          content = window.AndroidBridge.readFileByUri(note.uri_path);
+        } else if (settings.localDirectoryUri && note.local_path) {
+          content = window.AndroidBridge.readFile(settings.localDirectoryUri, note.local_path);
+        }
+        noteToOpen.content = content;
+      } catch (e) {
+        console.error('Error reading local file:', e);
+        showToast('Error al abrir la nota', 'error');
+      }
     }
     
     setSelectedNote(noteToOpen);
@@ -488,9 +534,18 @@ export default function App() {
       
       setNotes(currentNotes => currentNotes.map(n => n.id === updatedNote.id ? updatedNote : n));
       
-      if (updatedNote.is_local) {
-        if (window.AndroidBridge && settings.localDirectoryUri && updatedNote.local_path) {
-          window.AndroidBridge.writeFile(settings.localDirectoryUri, updatedNote.local_path, content);
+      if (updatedNote.is_local && window.AndroidBridge) {
+        let success = false;
+        if (updatedNote.uri_path) {
+          success = window.AndroidBridge.writeFileByUri(updatedNote.uri_path, content);
+        } else if (settings.localDirectoryUri && updatedNote.local_path) {
+          success = window.AndroidBridge.writeFile(settings.localDirectoryUri, updatedNote.local_path, content);
+        }
+        
+        if (success) {
+          showToast('Nota guardada localmente');
+        } else {
+          showToast('Error al guardar localmente', 'error');
         }
       } else if (user && isSupabaseConfigured) {
         supabase.from('notes').update({ 
@@ -633,7 +688,7 @@ export default function App() {
             </div>
           </header>
 
-          <div className="grid grid-cols-3 gap-3 mb-8">
+          <div className="grid grid-cols-2 gap-3 mb-8">
             <button 
               onClick={handleCreateLocalNote}
               className="flex flex-col items-center justify-center p-4 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-3xl hover:border-emerald-500 transition-all group"
@@ -645,30 +700,45 @@ export default function App() {
             </button>
             
             {window.AndroidBridge ? (
-              <button 
-                onClick={() => {
-                  if (settings.localDirectoryUri) {
-                    fetchLocalNotes(settings.localDirectoryUri);
-                    // Show a temporary "Cargado" state or just rely on the list updating
-                  } else {
-                    setModal({
-                      type: 'confirm',
-                      title: 'Carpeta no seleccionada',
-                      message: 'Por favor, selecciona una carpeta de trabajo en los ajustes para cargar notas locales.',
-                      onConfirm: () => {
-                        setView('settings');
-                        setModal({ type: null });
-                      }
-                    });
-                  }
-                }}
-                className="flex flex-col items-center justify-center p-4 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-3xl hover:border-amber-500 transition-all group"
-              >
-                <div className="w-10 h-10 rounded-full bg-amber-50 dark:bg-amber-500/10 flex items-center justify-center mb-3 group-hover:scale-110 transition-transform">
-                  <Download className="w-6 h-6 text-amber-500" />
-                </div>
-                <span className="text-[10px] font-bold uppercase tracking-tight">Cargar Local</span>
-              </button>
+              <>
+                <button 
+                  onClick={() => {
+                    console.log('Cargar local clicked');
+                    if (settings.localDirectoryUri) {
+                      fetchLocalNotes(settings.localDirectoryUri);
+                      showToast('Notas locales actualizadas');
+                    } else {
+                      setModal({
+                        type: 'confirm',
+                        title: 'Carpeta no seleccionada',
+                        message: 'Por favor, selecciona una carpeta de trabajo en los ajustes para cargar notas locales.',
+                        onConfirm: () => {
+                          setView('settings');
+                          setModal({ type: null });
+                        }
+                      });
+                    }
+                  }}
+                  className="flex flex-col items-center justify-center p-4 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-3xl hover:border-amber-500 transition-all group"
+                >
+                  <div className="w-10 h-10 rounded-full bg-amber-50 dark:bg-amber-500/10 flex items-center justify-center mb-3 group-hover:scale-110 transition-transform">
+                    <Download className="w-6 h-6 text-amber-500" />
+                  </div>
+                  <span className="text-[10px] font-bold uppercase tracking-tight text-center">Cargar Carpeta</span>
+                </button>
+                <button 
+                  onClick={() => {
+                    console.log('Abrir archivo clicked');
+                    window.AndroidBridge?.selectFile();
+                  }}
+                  className="flex flex-col items-center justify-center p-4 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-3xl hover:border-indigo-500 transition-all group"
+                >
+                  <div className="w-10 h-10 rounded-full bg-indigo-50 dark:bg-indigo-500/10 flex items-center justify-center mb-3 group-hover:scale-110 transition-transform">
+                    <FileText className="w-6 h-6 text-indigo-500" />
+                  </div>
+                  <span className="text-[10px] font-bold uppercase tracking-tight text-center">Abrir Archivo</span>
+                </button>
+              </>
             ) : (
               <label className="flex flex-col items-center justify-center p-4 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-3xl hover:border-amber-500 transition-all group cursor-pointer">
                 <input 
@@ -1050,6 +1120,24 @@ export default function App() {
       {view !== 'editor' && <Navigation />}
 
       {/* --- Custom Modal --- */}
+      {/* --- Toast --- */}
+      <AnimatePresence>
+        {toast.type && (
+          <motion.div 
+            initial={{ opacity: 0, y: 50 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 50 }}
+            className={cn(
+              "fixed bottom-24 left-1/2 -translate-x-1/2 px-6 py-3 rounded-2xl text-white font-bold shadow-2xl z-[100] flex items-center gap-2",
+              toast.type === 'success' ? "bg-emerald-500" : "bg-red-500"
+            )}
+          >
+            {toast.type === 'success' ? <Save className="w-5 h-5" /> : <Info className="w-5 h-5" />}
+            {toast.message}
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       <AnimatePresence>
         {modal.type && (
           <motion.div 

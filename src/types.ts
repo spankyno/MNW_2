@@ -8,6 +8,7 @@ export interface Note {
   is_local: boolean;
   is_favorite: boolean;
   local_path?: string; // For Android local storage tracking
+  uri_path?: string; // For files picked via native picker
 }
 
 export interface AppSettings {
