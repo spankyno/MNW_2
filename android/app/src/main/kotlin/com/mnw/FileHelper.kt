@@ -67,4 +67,20 @@ object FileHelper {
             Result.failure(e)
         }
     }
+
+    /**
+     * Reads a text file from a Uri using ContentResolver.
+     */
+    fun readTextFileFromUri(context: Context, uri: Uri): Result<String> {
+        return try {
+            val resolver = context.contentResolver
+            val inputStream = resolver.openInputStream(uri)
+                ?: throw Exception("Failed to open input stream")
+            
+            val content = inputStream.bufferedReader().use { it.readText() }
+            Result.success(content)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
 }
