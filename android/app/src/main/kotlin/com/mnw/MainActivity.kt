@@ -26,7 +26,7 @@ class MainActivity : AppCompatActivity() {
         webView.webViewClient = WebViewClient()
         
         // Load the web app URL
-        webView.loadUrl("https://ais-pre-frfacgymonhbeie6xtzl6d-73893629377.europe-west2.run.app")
+        webView.loadUrl("https://ais-dev-frfacgymonhbeie6xtzl6d-73893629377.europe-west2.run.app")
         
         setContentView(webView)
 
