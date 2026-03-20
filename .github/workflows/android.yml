@@ -19,6 +19,13 @@ jobs:
         distribution: 'temurin'
         cache: gradle
 
+    - name: Create gradle.properties
+      run: |
+        echo "android.useAndroidX=true" > gradle.properties
+        echo "android.enableJetifier=true" >> gradle.properties
+        cp gradle.properties app/gradle.properties
+      working-directory: android
+
     - name: Generate Gradle Wrapper
       run: gradle wrapper
       working-directory: android
@@ -28,11 +35,4 @@ jobs:
       working-directory: android
 
     - name: Build with Gradle
-      run: ./gradlew assembleDebug
-      working-directory: android
-
-    - name: Upload APK
-      uses: actions/upload-artifact@v4
-      with:
-        name: app-debug
-        path: android/app/build/outputs/apk/debug/app-debug.apk
+      run: ./gradlew assembleDebug --no-daemon -Pandroid.useAndroidX=true -Pandroid.enableJetifier=true
