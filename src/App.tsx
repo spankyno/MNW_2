@@ -63,12 +63,14 @@ const NoteCard = ({
   note, 
   onOpen, 
   onFavorite, 
-  onDelete 
+  onDelete,
+  onRename
 }: { 
   note: Note; 
   onOpen: (note: Note) => void;
   onFavorite: (id: string) => void;
   onDelete: (id: string, isLocal: boolean) => void;
+  onRename?: (note: Note) => void;
   key?: string;
 }) => (
   <motion.div 
@@ -77,6 +79,12 @@ const NoteCard = ({
     animate={{ opacity: 1, y: 0 }}
     className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-2xl p-4 shadow-sm hover:shadow-md transition-all cursor-pointer group"
     onClick={() => onOpen(note)}
+    onContextMenu={(e) => {
+      if (onRename) {
+        e.preventDefault();
+        onRename(note);
+      }
+    }}
   >
     <div className="flex justify-between items-start mb-2">
       <div className="flex items-center gap-2">
@@ -89,7 +97,7 @@ const NoteCard = ({
           {note.title}
         </h3>
       </div>
-      <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+      <div className={cn("flex gap-1 transition-opacity", note.is_favorite ? "opacity-100" : "opacity-0 group-hover:opacity-100")}>
         <button 
           onClick={(e) => { e.stopPropagation(); onFavorite(note.id); }}
           className={cn("p-1.5 rounded-full hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors", 
@@ -122,8 +130,9 @@ export default function App() {
   const [user, setUser] = useState<any>(null);
   const [settings, setSettings] = useState<AppSettings>({
     darkMode: false,
-    lineNumbers: true,
+    lineNumbers: false,
   });
+  const [selectedDate, setSelectedDate] = useState<Date>(new Date());
   const [history, setHistory] = useState<string[]>([]);
   
   // Modal states
@@ -270,6 +279,7 @@ export default function App() {
       let savedSettings: any = null;
       let savedNotes: any = null;
 
+      // Try AndroidBridge first
       if (window.AndroidBridge) {
         console.log('MNW: Loading data from AndroidBridge');
         const settingsStr = window.AndroidBridge.getSetting('mnw_settings', '');
@@ -290,18 +300,36 @@ export default function App() {
             console.error('MNW: Error parsing notes:', e);
           }
         }
-      } else {
-        console.log('MNW: Loading data from localStorage');
+      } 
+      
+      // Fallback to localStorage if not found in AndroidBridge or if AndroidBridge not available
+      if (!savedSettings) {
+        console.log('MNW: Loading settings from localStorage');
         const localSettingsStr = localStorage.getItem('mnw_settings');
-        if (localSettingsStr) savedSettings = JSON.parse(localSettingsStr);
-        
+        if (localSettingsStr) {
+          try {
+            savedSettings = JSON.parse(localSettingsStr);
+          } catch (e) {
+            console.error('MNW: Error parsing settings from localStorage:', e);
+          }
+        }
+      }
+
+      if (!savedNotes) {
+        console.log('MNW: Loading notes from localStorage');
         const localNotesStr = localStorage.getItem('mnw_local_notes');
-        if (localNotesStr) savedNotes = JSON.parse(localNotesStr);
+        if (localNotesStr) {
+          try {
+            savedNotes = JSON.parse(localNotesStr);
+          } catch (e) {
+            console.error('MNW: Error parsing notes from localStorage:', e);
+          }
+        }
       }
 
       if (savedSettings) {
         console.log('MNW: Applying saved settings:', savedSettings);
-        setSettings(savedSettings);
+        setSettings(prev => ({ ...prev, ...savedSettings }));
         if (savedSettings.localDirectoryUri && window.AndroidBridge) {
           console.log('MNW: Fetching local notes for URI:', savedSettings.localDirectoryUri);
           // Pass loaded notes to fetchLocalNotes to preserve favorites
@@ -312,14 +340,32 @@ export default function App() {
       if (savedNotes && savedNotes.length > 0) {
         setNotes(prev => {
           const webNotes = prev.filter(n => !n.is_local);
-          return [...webNotes, ...savedNotes];
+          // Avoid duplicates if any
+          const localIds = new Set(savedNotes.map((n: any) => n.id));
+          const uniqueWebNotes = webNotes.filter(n => !localIds.has(n.id));
+          return [...uniqueWebNotes, ...savedNotes];
         });
       } else if (!window.AndroidBridge) {
         setNotes(MOCK_NOTES);
       }
     };
 
-    loadData();
+    // Check for AndroidBridge with a small delay if not immediately available
+    if (!window.AndroidBridge) {
+      const checkBridge = setInterval(() => {
+        if (window.AndroidBridge) {
+          console.log('MNW: AndroidBridge found via interval');
+          loadData();
+          clearInterval(checkBridge);
+        }
+      }, 100);
+      // Also load from localStorage immediately as a fallback
+      loadData();
+      // Stop checking after 2 seconds
+      setTimeout(() => clearInterval(checkBridge), 2000);
+    } else {
+      loadData();
+    }
 
     window.onDirectorySelected = (uri: string) => {
       setSettings(prev => {
@@ -646,8 +692,68 @@ export default function App() {
       } catch (e) {
         console.error('Error updating favorite status:', e);
       }
+    } else if (note.is_local && window.AndroidBridge) {
+      // For local notes, we rely on the useEffect that persists notes to mnw_local_notes
+      // which is already implemented.
     }
   }, [notes, user]);
+
+  const handleRenameNote = useCallback((note: Note) => {
+    setModal({
+      type: 'create',
+      title: 'Renombrar Nota',
+      message: `Introduce el nuevo nombre para "${note.title}":`,
+      inputValue: note.title,
+      onConfirm: async (newName) => {
+        if (!newName || newName.trim() === note.title) {
+          setModal({ type: null });
+          return;
+        }
+
+        const trimmedName = newName.trim();
+        const newFileName = trimmedName.endsWith('.txt') ? trimmedName : `${trimmedName}.txt`;
+
+        if (note.is_local) {
+          if (window.AndroidBridge && settings.localDirectoryUri && note.local_path) {
+            const success = (window.AndroidBridge as any).renameFile(
+              settings.localDirectoryUri, 
+              note.local_path, 
+              newFileName
+            );
+            if (!success) {
+              showToast('Error al renombrar el archivo', 'error');
+              return;
+            }
+          }
+          
+          setNotes(currentNotes => currentNotes.map(n => 
+            n.id === note.id ? { ...n, title: trimmedName, local_path: newFileName, id: newFileName } : n
+          ));
+          showToast('Nota renombrada');
+        } else if (user && isSupabaseConfigured) {
+          try {
+            const { error } = await supabase
+              .from('notes')
+              .update({ title: trimmedName })
+              .eq('id', note.id);
+            
+            if (error) {
+              showToast('Error al renombrar en la nube', 'error');
+              console.error(error);
+            } else {
+              setNotes(currentNotes => currentNotes.map(n => 
+                n.id === note.id ? { ...n, title: trimmedName } : n
+              ));
+              showToast('Nota renombrada en la nube');
+            }
+          } catch (e) {
+            console.error(e);
+          }
+        }
+        setModal({ type: null });
+      }
+    });
+  }, [user, settings.localDirectoryUri]);
 
   const handleUndo = () => {
     if (history.length > 1) {
@@ -853,6 +959,7 @@ export default function App() {
                 onOpen={handleOpenEditor}
                 onFavorite={toggleFavorite}
                 onDelete={handleDeleteNote}
+                onRename={handleRenameNote}
               />
             ))}
           </div>
@@ -862,7 +969,13 @@ export default function App() {
       {/* --- Calendar View --- */}
       {view === 'calendar' && (
         <div className="p-6 pb-24 max-w-2xl mx-auto">
-          <h2 className="text-2xl font-bold mb-6">Calendario</h2>
+          <div className="flex items-center justify-between mb-6">
+            <h2 className="text-2xl font-bold">Calendario</h2>
+            <div className="text-sm font-medium text-zinc-500 bg-zinc-100 dark:bg-zinc-800 px-3 py-1 rounded-full">
+              {format(selectedDate, 'MMMM yyyy')}
+            </div>
+          </div>
+          
           <div className="bg-white dark:bg-zinc-900 rounded-3xl p-6 border border-zinc-200 dark:border-zinc-800 shadow-sm mb-6">
             <div className="grid grid-cols-7 gap-2 text-center mb-4">
               {['D', 'L', 'M', 'X', 'J', 'V', 'S'].map(d => (
@@ -870,25 +983,68 @@ export default function App() {
               ))}
             </div>
             <div className="grid grid-cols-7 gap-2">
-              {Array.from({ length: 31 }).map((_, i) => {
-                const day = i + 1;
-                const date = new Date(2026, 2, day);
-                const hasNotes = notes.some(n => isSameDay(parseISO(n.updated_at), date));
-                return (
-                  <button 
-                    key={i} 
-                    className={cn(
-                      "aspect-square rounded-xl flex items-center justify-center text-sm font-medium transition-all",
-                      hasNotes ? "bg-emerald-500 text-white shadow-lg shadow-emerald-500/20" : "hover:bg-zinc-100 dark:hover:bg-zinc-800"
-                    )}
-                  >
-                    {day}
-                  </button>
-                );
-              })}
+              {(() => {
+                const year = selectedDate.getFullYear();
+                const month = selectedDate.getMonth();
+                const firstDayOfMonth = new Date(year, month, 1).getDay();
+                const daysInMonth = new Date(year, month + 1, 0).getDate();
+                
+                const days = [];
+                // Padding for first day
+                for (let i = 0; i < firstDayOfMonth; i++) {
+                  days.push(<div key={`empty-${i}`} />);
+                }
+                
+                for (let day = 1; day <= daysInMonth; day++) {
+                  const date = new Date(year, month, day);
+                  const hasNotes = notes.some(n => isSameDay(parseISO(n.updated_at), date));
+                  const isSelected = isSameDay(selectedDate, date);
+                  
+                  days.push(
+                    <button 
+                      key={day} 
+                      onClick={() => setSelectedDate(date)}
+                      className={cn(
+                        "aspect-square rounded-xl flex items-center justify-center text-sm font-medium transition-all relative",
+                        isSelected ? "bg-emerald-500 text-white shadow-lg shadow-emerald-500/20" : 
+                        hasNotes ? "bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400" :
+                        "hover:bg-zinc-100 dark:hover:bg-zinc-800"
+                      )}
+                    >
+                      {day}
+                      {hasNotes && !isSelected && (
+                        <div className="absolute bottom-1.5 w-1 h-1 rounded-full bg-emerald-500" />
+                      )}
+                    </button>
+                  );
+                }
+                return days;
+              })()}
             </div>
           </div>
-          <p className="text-center text-sm text-zinc-500 italic">Toca un día para ver las notas modificadas</p>
+
+          <div className="space-y-4">
+            <h3 className="text-xs font-bold text-zinc-400 uppercase tracking-widest px-1">
+              Notas del {format(selectedDate, 'd MMMM')}
+            </h3>
+            <div className="grid grid-cols-1 gap-3">
+              {notes.filter(n => isSameDay(parseISO(n.updated_at), selectedDate)).map(note => (
+                <NoteCard 
+                  key={note.id} 
+                  note={note} 
+                  onOpen={handleOpenEditor}
+                  onFavorite={toggleFavorite}
+                  onDelete={handleDeleteNote}
+                  onRename={handleRenameNote}
+                />
+              ))}
+              {notes.filter(n => isSameDay(parseISO(n.updated_at), selectedDate)).length === 0 && (
+                <div className="text-center py-10 bg-zinc-100/50 dark:bg-zinc-900/50 rounded-2xl border border-dashed border-zinc-200 dark:border-zinc-800">
+                  <p className="text-sm text-zinc-400">No hay notas modificadas este día</p>
+                </div>
+              )}
+            </div>
+          </div>
         </div>
       )}
 
@@ -913,6 +1069,7 @@ export default function App() {
                 onOpen={handleOpenEditor}
                 onFavorite={toggleFavorite}
                 onDelete={handleDeleteNote}
+                onRename={handleRenameNote}
               />
             ))}
             {filteredNotes.length === 0 && (
@@ -939,6 +1096,7 @@ export default function App() {
                 onOpen={handleOpenEditor}
                 onFavorite={toggleFavorite}
                 onDelete={handleDeleteNote}
+                onRename={handleRenameNote}
               />
             ))}
             {filteredNotes.length === 0 && (
