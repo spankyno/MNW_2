@@ -49,8 +49,8 @@ class MainActivity : AppCompatActivity() {
         android.util.Log.d("MNW", "Adding AndroidBridge interface")
         webView.addJavascriptInterface(WebAppInterface(), "AndroidBridge")
         
-        // Load the web app URL
-        webView.loadUrl("https://ais-pre-frfacgymonhbeie6xtzl6d-73893629377.europe-west2.run.app")
+        // Use the current development App URL
+        webView.loadUrl("https://ais-dev-frfacgymonhbeie6xtzl6d-73893629377.europe-west2.run.app")
         
         setContentView(webView)
 
