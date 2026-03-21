@@ -50,7 +50,7 @@ class MainActivity : AppCompatActivity() {
         webView.addJavascriptInterface(WebAppInterface(), "AndroidBridge")
         
         // Load the web app URL
-        webView.loadUrl("https://ais-dev-frfacgymonhbeie6xtzl6d-73893629377.europe-west2.run.app")
+        webView.loadUrl("https://ais-pre-frfacgymonhbeie6xtzl6d-73893629377.europe-west2.run.app")
         
         setContentView(webView)
 
@@ -176,6 +176,25 @@ class MainActivity : AppCompatActivity() {
             }
             return false
         }
+
+        @JavascriptInterface
+        fun renameFile(uriString: String, oldFileName: String, newFileName: String): Boolean {
+            android.util.Log.d("MNW", "Renaming file: $oldFileName to $newFileName in $uriString")
+            try {
+                val uri = Uri.parse(uriString)
+                val dir = DocumentFile.fromTreeUri(this@MainActivity, uri)
+                val file = dir?.findFile(oldFileName)
+                if (file != null) {
+                    // Strip extension if it's there as DocumentFile.renameTo handles it
+                    val newName = if (newFileName.endsWith(".txt")) newFileName.substring(0, newFileName.length - 4) else newFileName
+                    return file.renameTo(newName)
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("MNW", "Error renaming file", e)
+            }
+            return false
+        }
+
         @JavascriptInterface
         fun readFileByUri(uriString: String): String {
             try {
