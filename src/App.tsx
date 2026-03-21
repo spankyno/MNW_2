@@ -160,7 +160,7 @@ export default function App() {
   }, []);
 
   // Initialize data
-  const fetchLocalNotes = useCallback((uri: string, existingNotes?: Note[]) => {
+  const fetchLocalNotes = useCallback((uri: string, existingNotes?: Note[], favoriteIds?: Set<string>) => {
     console.log('Fetching local notes from URI:', uri);
     if (!window.AndroidBridge) {
       console.warn('AndroidBridge not available');
@@ -196,7 +196,9 @@ export default function App() {
             created_at: new Date(f.lastModified).toISOString(),
             updated_at: new Date(f.lastModified).toISOString(),
             is_local: true,
-            is_favorite: existing?.is_favorite || false,
+            is_favorite: existing?.is_favorite 
+              || favoriteIds?.has(f.name) 
+              || false,
             local_path: f.name
           };
         });
@@ -280,6 +282,7 @@ export default function App() {
     const loadData = async () => {
       let savedSettings: any = null;
       let savedNotes: any = null;
+      let savedFavoriteIds: string[] = [];
 
       // Try AndroidBridge first
       if (window.AndroidBridge) {
@@ -302,6 +305,11 @@ export default function App() {
             console.error('MNW: Error parsing notes:', e);
           }
         }
+
+        const favStr = window.AndroidBridge.getSetting('mnw_favorites', '[]');
+        try {
+          savedFavoriteIds = JSON.parse(favStr);
+        } catch (e) {}
       } 
       
       // Fallback to localStorage if not found in AndroidBridge or if AndroidBridge not available
@@ -329,13 +337,24 @@ export default function App() {
         }
       }
 
+      if (savedFavoriteIds.length === 0) {
+        const localFavStr = localStorage.getItem('mnw_favorites') || '[]';
+        try {
+          savedFavoriteIds = JSON.parse(localFavStr);
+        } catch (e) {}
+      }
+
       if (savedSettings) {
         console.log('MNW: Applying saved settings:', savedSettings);
         setSettings(prev => ({ ...prev, ...savedSettings }));
         if (savedSettings.localDirectoryUri && window.AndroidBridge) {
           console.log('MNW: Fetching local notes for URI:', savedSettings.localDirectoryUri);
           // Pass loaded notes to fetchLocalNotes to preserve favorites
-          fetchLocalNotes(savedSettings.localDirectoryUri, savedNotes || []);
+          fetchLocalNotes(
+            savedSettings.localDirectoryUri, 
+            savedNotes || [],
+            new Set(savedFavoriteIds)
+          );
         }
       }
 
@@ -412,6 +431,20 @@ export default function App() {
       window.AndroidBridge.saveSetting('mnw_local_notes', JSON.stringify(notes.filter(n => n.is_local)));
     } else {
       localStorage.setItem('mnw_local_notes', JSON.stringify(notes));
+    }
+  }, [notes]);
+
+  // Persist favorites independently
+  useEffect(() => {
+    const favorites = notes
+      .filter(n => n.is_favorite)
+      .map(n => n.id);
+    
+    const favJson = JSON.stringify(favorites);
+    if (window.AndroidBridge) {
+      window.AndroidBridge.saveSetting('mnw_favorites', favJson);
+    } else {
+      localStorage.setItem('mnw_favorites', favJson);
     }
   }, [notes]);
 
