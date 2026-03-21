@@ -17,10 +17,12 @@ import {
   Info,
   Moon,
   Sun,
-  ListOrdered
+  ListOrdered,
+  ChevronLeft,
+  ChevronRight
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { isSameDay, parseISO } from 'date-fns';
+import { isSameDay, parseISO, addMonths, subMonths } from 'date-fns';
 import { format } from 'date-fns';
 import JSZip from 'jszip';
 import { supabase, isSupabaseConfigured } from './lib/supabase';
@@ -688,9 +690,13 @@ export default function App() {
           .from('notes')
           .update({ is_favorite: newFavoriteStatus })
           .eq('id', id);
-        if (error) console.error('Error updating favorite status in Supabase:', error);
+        if (error) {
+          console.error('Error updating favorite status in Supabase:', error);
+          showToast('Error al sincronizar favorito', 'error');
+        }
       } catch (e) {
         console.error('Error updating favorite status:', e);
+        showToast('Error de conexión', 'error');
       }
     } else if (note.is_local && window.AndroidBridge) {
       // For local notes, we rely on the useEffect that persists notes to mnw_local_notes
@@ -971,8 +977,22 @@ export default function App() {
         <div className="p-6 pb-24 max-w-2xl mx-auto">
           <div className="flex items-center justify-between mb-6">
             <h2 className="text-2xl font-bold">Calendario</h2>
-            <div className="text-sm font-medium text-zinc-500 bg-zinc-100 dark:bg-zinc-800 px-3 py-1 rounded-full">
-              {format(selectedDate, 'MMMM yyyy')}
+            <div className="flex items-center gap-2">
+              <button 
+                onClick={() => setSelectedDate(subMonths(selectedDate, 1))}
+                className="p-2 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-xl transition-colors"
+              >
+                <ChevronLeft className="w-5 h-5" />
+              </button>
+              <div className="text-sm font-medium text-zinc-500 bg-zinc-100 dark:bg-zinc-800 px-3 py-1 rounded-full min-w-[120px] text-center">
+                {format(selectedDate, 'MMMM yyyy')}
+              </div>
+              <button 
+                onClick={() => setSelectedDate(addMonths(selectedDate, 1))}
+                className="p-2 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-xl transition-colors"
+              >
+                <ChevronRight className="w-5 h-5" />
+              </button>
             </div>
           </div>
           
