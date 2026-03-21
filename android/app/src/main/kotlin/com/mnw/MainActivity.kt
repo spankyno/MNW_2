@@ -8,9 +8,13 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Environment
+import android.provider.Settings
 import android.webkit.JavascriptInterface
+import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
@@ -30,6 +34,7 @@ class MainActivity : AppCompatActivity() {
         private const val DIR_PICKER_REQUEST_CODE = 456
         private const val FILE_PICKER_REQUEST_CODE = 789
         private const val SAVE_BACKUP_REQUEST_CODE = 101
+        private const val MANAGE_STORAGE_REQUEST_CODE = 202
     }
 
     private var pendingBackupBytes: ByteArray? = null
@@ -40,19 +45,46 @@ class MainActivity : AppCompatActivity() {
         webView = WebView(this)
         webView.settings.javaScriptEnabled = true
         webView.settings.domStorageEnabled = true
+        
+        // Security: allowFileAccess is only needed for local assets
         webView.settings.allowFileAccess = true
         webView.settings.allowContentAccess = true
         webView.settings.databaseEnabled = true
-        webView.webViewClient = WebViewClient()
+        
+        webView.webViewClient = object : WebViewClient() {
+            override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
+                val url = request?.url?.toString() ?: ""
+                if (url.startsWith("http") && !url.contains("run.app") && !url.contains("supabase")) {
+                    // Open external links in browser
+                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+                    startActivity(intent)
+                    return true
+                }
+                return false
+            }
+        }
         
         // Add JS Bridge
         android.util.Log.d("MNW", "Adding AndroidBridge interface")
         webView.addJavascriptInterface(WebAppInterface(), "AndroidBridge")
         
-        // Use the current development App URL
-        webView.loadUrl("https://ais-dev-frfacgymonhbeie6xtzl6d-73893629377.europe-west2.run.app")
+        // Load production URL
+        webView.loadUrl("https://misnotasweb.vercel.app/")
         
         setContentView(webView)
+
+        // Handle Back Press with Callback (Android 13+ migration)
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                if (webView.canGoBack()) {
+                    webView.goBack()
+                } else {
+                    isEnabled = false
+                    onBackPressedDispatcher.onBackPressed()
+                    isEnabled = true
+                }
+            }
+        })
 
         checkPermissions()
     }
@@ -292,9 +324,20 @@ class MainActivity : AppCompatActivity() {
     private fun checkPermissions() {
         val permissions = mutableListOf<String>()
         
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            // Android 13+ doesn't need READ_EXTERNAL_STORAGE for general files
-            // but might need specific ones. Markor requests MANAGE_EXTERNAL_STORAGE for full access.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            // Android 11+ (API 30+) needs MANAGE_EXTERNAL_STORAGE for full access
+            if (!Environment.isExternalStorageManager()) {
+                try {
+                    val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION)
+                    intent.addCategory("android.intent.category.DEFAULT")
+                    intent.data = Uri.parse(String.format("package:%s", applicationContext.packageName))
+                    startActivityForResult(intent, MANAGE_STORAGE_REQUEST_CODE)
+                } catch (e: Exception) {
+                    val intent = Intent()
+                    intent.action = Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION
+                    startActivityForResult(intent, MANAGE_STORAGE_REQUEST_CODE)
+                }
+            }
         } else {
             permissions.add(Manifest.permission.READ_EXTERNAL_STORAGE)
             permissions.add(Manifest.permission.WRITE_EXTERNAL_STORAGE)
@@ -306,14 +349,6 @@ class MainActivity : AppCompatActivity() {
 
         if (toRequest.isNotEmpty()) {
             ActivityCompat.requestPermissions(this, toRequest.toTypedArray(), PERMISSION_REQUEST_CODE)
-        }
-    }
-
-    override fun onBackPressed() {
-        if (webView.canGoBack()) {
-            webView.goBack()
-        } else {
-            super.onBackPressed()
         }
     }
 }
