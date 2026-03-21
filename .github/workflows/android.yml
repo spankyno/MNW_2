@@ -28,6 +28,7 @@ jobs:
 
     - name: Copy Assets to Android
       run: |
+        rm -rf android/app/src/main/assets/*
         mkdir -p android/app/src/main/assets
         cp -r dist/* android/app/src/main/assets/
 
@@ -43,9 +44,18 @@ jobs:
       with:
         gradle-version: 8.5
 
-    - name: Create gradle.properties
+    - name: Build with Gradle
       run: |
-        echo "android.useAndroidX=true" > gradle.properties
-        echo "android.enableJetifier=true" >> gradle.properties
-        cp gradle.properties app/gradle.properties
-      working-directory: android
+        cd android
+        gradle assembleDebug --no-daemon -Pandroid.useAndroidX=true -Pandroid.enableJetifier=true
+      
+    - name: Verify APK Generation
+      run: |
+        ls -R android/app/build/outputs/apk/debug/
+
+    - name: Upload APK
+      uses: actions/upload-artifact@v4
+      with:
+        name: app-debug
+        path: android/app/build/outputs/apk/debug/app-debug.apk
+        if-no-files-found: error
